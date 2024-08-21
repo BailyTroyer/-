@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>🦙</title>
+	<style>
+		body {
+			margin: 0;
+			overflow: hidden;
+		}
+
+		#plantCanvas,
+		#llamaCanvas {
+			position: absolute;
+			top: 0;
+			left: 0;
+		}
+
+		#plantCanvas {
+			z-index: 1;
+		}
+
+		#llamaCanvas {
+			z-index: 2;
+		}
+	</style>
+</head>
+
+<body>
+	<canvas id="plantCanvas"></canvas>
+	<canvas id="llamaCanvas"></canvas>
+
+	<script>
+		const plantCanvas = document.getElementById('plantCanvas');
+		const plantCtx = plantCanvas.getContext('2d');
+
+		const llamaCanvas = document.getElementById('llamaCanvas');
+		const llamaCtx = llamaCanvas.getContext('2d');
+
+		// Resize canvases to fit the screen
+		function resizeCanvas() {
+			plantCanvas.width = window.innerWidth;
+			plantCanvas.height = window.innerHeight;
+			llamaCanvas.width = window.innerWidth;
+			llamaCanvas.height = window.innerHeight;
+		}
+		window.addEventListener('resize', resizeCanvas);
+		resizeCanvas();
+
+		const llamaImage = new Image();
+		llamaImage.src = 'llama.png'; // Path to the llama walking sprite sheet
+
+		const eatingImage = new Image();
+		eatingImage.src = 'llama_eating.png'; // Path to the llama eating sprite sheet
+
+		const shadowImage = new Image();
+		shadowImage.src = 'shadow.png'; // Path to the shadow sprite sheet
+
+		const broccoliImage = new Image();
+		broccoliImage.src = 'crops.png'; // Path to the crops sprite sheet
+
+		let imagesLoaded = 0;
+
+		const spriteWidth = 128; // Each sprite frame's width
+		const spriteHeight = 128; // Each sprite frame's height
+		const shadowWidth = 128; // The shadow's width should match the sprite's width for alignment
+		const shadowHeight = 128; // The height of each shadow frame
+		const framesPerRow = 4; // Number of frames per row in the sprite sheets
+		let currentFrame = 0; // Start from the first frame
+		let frameCount = 0;
+		let animationSpeed = 4; // Speed of the animation (lower value = faster animation)
+		let currentDirection = 0; // 0: Backward, 1: Left, 2: Forward, 3: Right
+
+		// Initial position of the llama at the center of the screen
+		let llamaX = llamaCanvas.width / 2 - spriteWidth / 2;
+		let llamaY = llamaCanvas.height / 2 - spriteHeight / 2;
+		const moveDistance = 5; // Distance to move per frame
+
+		let moving = false; // Track if the llama is moving
+		let touchActive = false; // Track if touch is active
+		let touchX, touchY; // Track touch position
+
+		let isEating = false; // Track if the llama is eating
+		let chewStart = false; // Track if the llama has started chewing
+		let eatFrameCount = 0; // Track the eating animation frame count
+		let chewingDuration = 0; // Duration for how long the llama should chew
+		let chewStartTime = 0; // Start time of the chewing
+		let chewingFrame = 0; // Current chewing frame (either 3rd or 4th column)
+		const eatProximity = 30; // Distance within which the llama will start eating
+		let broccoliToRemove = null; // Track which broccoli to remove after eating
+
+		const broccoli = [];
+		const broccoliFrameInterval = 1000; // 1 frame per second
+		const spriteCols = 32;
+		const spriteRows = 15;
+		const broccoliWidth = 32; // Each broccoli frame's width
+		const broccoliHeight = 64; // Each broccoli frame's height
+
+		const keys = {
+			ArrowUp: false,
+			ArrowLeft: false,
+			ArrowDown: false,
+			ArrowRight: false,
+		};
+
+		let lastTimestamp = 0;
+
+		function getRandomInterval(min, max) {
+			return min + Math.random() * (max - min);
+		}
+
+		// Function to randomly place broccoli on the plant canvas
+		function placeBroccoli() {
+			const x = Math.floor(Math.random() * (plantCanvas.width - broccoliWidth));
+			const y = Math.floor(Math.random() * (plantCanvas.height - broccoliHeight));
+			broccoli.push({ x, y, currentRow: 5, frameCount: 0 });
+		}
+
+		function updateBroccoli(deltaTime) {
+			broccoli.forEach((b) => {
+				b.frameCount += deltaTime;
+				if (b.frameCount >= broccoliFrameInterval) {
+					b.frameCount = 0;
+					if (b.currentRow < 8) { // Updated last row to 8
+						b.currentRow++;
+					}
+				}
+			});
+		}
+
+		function drawBroccoli() {
+			plantCtx.clearRect(0, 0, plantCanvas.width, plantCanvas.height); // Clear the plant canvas
+
+			broccoli.forEach((b) => {
+				plantCtx.drawImage(
+					broccoliImage,
+					12 * broccoliWidth, b.currentRow * broccoliHeight, // Source X and Y on the sprite sheet
+					broccoliWidth, broccoliHeight, // Source width and height
+					b.x, b.y, // Destination X and Y on the plant canvas
+					broccoliWidth, broccoliHeight // Destination width and height
+				);
+			});
+		}
+
+		// Function to check if the llama is near a fully grown broccoli
+		function checkForBroccoliToEat() {
+			if (!isEating) {
+				for (const b of broccoli) {
+					if (b.currentRow === 8) { // Check if the broccoli is fully grown (last row is 8)
+						const distance = Math.hypot(llamaX + spriteWidth / 2 - b.x - broccoliWidth / 2, llamaY + spriteHeight / 2 - b.y - broccoliHeight / 2);
+						if (distance < eatProximity) {
+							startEating(b);
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		// Function to start eating the broccoli
+		function startEating(broccoli) {
+			isEating = true;
+			chewStart = false;
+			currentFrame = 0;
+			eatFrameCount = 0;
+			broccoliToRemove = broccoli; // Store the broccoli to remove after eating
+			moving = false; // Stop movement during eating
+			touchActive = false; // Stop touch input during eating
+		}
+
+		// Function to update the animation frame and sync movement
+		function updateFrame(deltaTime) {
+			if (isEating) {
+				eatFrameCount += deltaTime;
+				if (!chewStart) {
+					if (eatFrameCount >= animationSpeed * 16.67) { // 16.67ms is roughly 60FPS
+						eatFrameCount = 0;
+						currentFrame++;
+
+						// Handle the transition from bending down to chewing
+						if (currentFrame === 2) { // Reached the chewing frames
+							chewStart = true;
+							chewStartTime = Date.now();
+							chewingDuration = 1000 + Math.random() * 1500; // Randomly choose 1-2.5 seconds for chewing
+							chewingFrame = 2; // Start with the first chewing frame
+						}
+					}
+				} else {
+					if (Date.now() - chewStartTime < chewingDuration) {
+						// During chewing, cycle between the last two frames
+						if (eatFrameCount >= animationSpeed * 16.67) {
+							eatFrameCount = 0;
+							chewingFrame = chewingFrame === 2 ? 3 : 2; // Toggle between the two chewing frames
+							currentFrame = chewingFrame; // Set current frame to chewing frame
+						}
+					} else {
+						// Reverse the bending down animation
+						if (eatFrameCount >= animationSpeed * 16.67) {
+							eatFrameCount = 0;
+							currentFrame--;
+
+							if (currentFrame < 0) {
+								if (broccoliToRemove) {
+									removeBroccoli(broccoliToRemove); // Remove the eaten broccoli
+									broccoliToRemove = null; // Reset the broccoliToRemove tracker
+								}
+								isEating = false; // Stop eating after the reverse animation
+								resetMovementState(); // Reset movement state after eating
+								currentFrame = 0; // Reset to the default standing position
+							}
+						}
+					}
+				}
+			} else if (moving || touchActive) {
+				frameCount += deltaTime;
+				if (frameCount >= animationSpeed * 16.67) {
+					frameCount = 0;
+					currentFrame = (currentFrame + 1) % framesPerRow; // Move to the next frame within the current direction
+
+					if (touchActive) {
+						// Calculate the direction of movement based on touch position
+						const dx = touchX - (llamaX + spriteWidth / 2);
+						const dy = touchY - (llamaY + spriteHeight / 2);
+						const angle = Math.atan2(dy, dx);
+
+						// Determine movement direction
+						llamaX += moveDistance * Math.cos(angle);
+						llamaY += moveDistance * Math.sin(angle);
+
+						// Determine the direction of the llama sprite based on angle
+						if (angle >= -Math.PI / 4 && angle < Math.PI / 4) {
+							currentDirection = 3; // Right
+						} else if (angle >= Math.PI / 4 && angle < (3 * Math.PI) / 4) {
+							currentDirection = 2; // Down
+						} else if (angle >= (3 * Math.PI) / 4 || angle < -(3 * Math.PI) / 4) {
+							currentDirection = 1; // Left
+						} else {
+							currentDirection = 0; // Up
+						}
+					} else {
+						// Handle keyboard input
+						if (keys.ArrowUp && keys.ArrowLeft) {
+							currentDirection = 1; // Moving left
+							llamaX -= moveDistance / Math.sqrt(2);
+							llamaY -= moveDistance / Math.sqrt(2);
+						} else if (keys.ArrowUp && keys.ArrowRight) {
+							currentDirection = 3; // Moving right
+							llamaX += moveDistance / Math.sqrt(2);
+							llamaY -= moveDistance / Math.sqrt(2);
+						} else if (keys.ArrowDown && keys.ArrowLeft) {
+							currentDirection = 1; // Moving left
+							llamaX -= moveDistance / Math.sqrt(2);
+							llamaY += moveDistance / Math.sqrt(2);
+						} else if (keys.ArrowDown && keys.ArrowRight) {
+							currentDirection = 3; // Moving right
+							llamaX += moveDistance / Math.sqrt(2);
+							llamaY += moveDistance / Math.sqrt(2);
+						} else if (keys.ArrowUp) {
+							currentDirection = 0; // Moving up
+							llamaY -= moveDistance;
+						} else if (keys.ArrowLeft) {
+							currentDirection = 1; // Moving left
+							llamaX -= moveDistance;
+						} else if (keys.ArrowDown) {
+							currentDirection = 2; // Moving down
+							llamaY += moveDistance;
+						} else if (keys.ArrowRight) {
+							currentDirection = 3; // Moving right
+							llamaX += moveDistance;
+						}
+					}
+
+					// Ensure the llama doesn't move out of bounds
+					llamaX = Math.max(0, Math.min(llamaCanvas.width - spriteWidth, llamaX));
+					llamaY = Math.max(0, Math.min(llamaCanvas.height - spriteHeight, llamaY));
+				}
+			}
+
+			// Check if llama is near a fully grown broccoli
+			checkForBroccoliToEat();
+
+			// Update broccoli growth
+			updateBroccoli(deltaTime);
+		}
+
+		// Function to remove the eaten broccoli
+		function removeBroccoli(broccoliToRemove) {
+			const index = broccoli.indexOf(broccoliToRemove);
+			if (index > -1) {
+				broccoli.splice(index, 1); // Remove the broccoli from the array
+			}
+		}
+
+		// Function to reset movement state after eating
+		function resetMovementState() {
+			moving = false;
+			touchActive = false;
+			for (let key in keys) {
+				keys[key] = false;
+			}
+		}
+
+		// Function to draw the llama and its shadow on the canvas
+		function drawLlama() {
+			llamaCtx.clearRect(0, 0, llamaCanvas.width, llamaCanvas.height); // Clear the llama canvas
+
+			const col = currentFrame; // Current frame column
+			const spriteSheet = isEating ? eatingImage : llamaImage;
+
+			// Determine the correct shadow frame based on the current direction
+			const shadowFrameY = currentDirection * shadowHeight; // Calculate Y position on the shadow sprite sheet
+
+			// Adjust the Y position to align the shadow correctly under the llama
+			const shadowYPosition = llamaY + spriteHeight - shadowHeight;
+
+			// Draw the shadow
+			llamaCtx.drawImage(
+				shadowImage,
+				0, shadowFrameY, // Source X and Y on the shadow sprite sheet (X is 0 since all frames are in one column, Y changes with row)
+				shadowWidth, shadowHeight, // Source width and height
+				llamaX, shadowYPosition, // Adjusted Destination X and Y
+				shadowWidth, shadowHeight // Destination width and height
+			);
+
+			// Draw the llama sprite on top of the shadow
+			llamaCtx.drawImage(
+				spriteSheet,
+				col * spriteWidth, currentDirection * spriteHeight, // Source X and Y on the llama sprite sheet
+				spriteWidth, spriteHeight, // Source width and height
+				llamaX, llamaY, // Destination X and Y
+				spriteWidth, spriteHeight // Destination width and height
+			);
+		}
+
+		// Main animation loop
+		function animate(timestamp) {
+			// Calculate the time difference between frames
+			const deltaTime = timestamp - lastTimestamp;
+			lastTimestamp = timestamp;
+
+			// Use the deltaTime to adjust animation speed
+			updateFrame(deltaTime);
+			drawBroccoli();
+			drawLlama();
+
+			requestAnimationFrame(animate); // Call animate recursively
+		}
+
+		// Handle key presses to change direction and start movement
+		function changeDirection(event) {
+			if (!isEating && keys.hasOwnProperty(event.key)) {
+				keys[event.key] = true;
+				moving = true;
+			}
+		}
+
+		// Stop movement when the arrow key is released
+		function stopMoving(event) {
+			if (!isEating && keys.hasOwnProperty(event.key)) {
+				keys[event.key] = false;
+			}
+
+			// Stop moving if no keys are pressed
+			moving = keys.ArrowUp || keys.ArrowLeft || keys.ArrowDown || keys.ArrowRight;
+		}
+
+		// Handle touch start and move
+		function handleTouch(event) {
+			if (!isEating) {
+				const touch = event.touches[0];
+				touchX = touch.clientX;
+				touchY = touch.clientY;
+				touchActive = true;
+			}
+		}
+
+		// Stop movement when the touch ends
+		function stopTouch() {
+			touchActive = false;
+		}
+
+		// Function to start animation once all images are loaded
+		function checkImagesLoaded() {
+			imagesLoaded++;
+			if (imagesLoaded === 4) { // Updated to wait for 4 images
+				lastTimestamp = performance.now();
+				requestAnimationFrame(animate);
+
+				// Set up broccoli spawning at a random interval between 3-5 seconds
+				function spawnBroccoli() {
+					placeBroccoli();
+					setTimeout(spawnBroccoli, getRandomInterval(3000, 5000)); // 3 to 5 seconds interval
+				}
+				spawnBroccoli(); // Start spawning broccoli
+			}
+		}
+
+		// Ensure all images are loaded before starting the animation
+		llamaImage.onload = checkImagesLoaded;
+		eatingImage.onload = checkImagesLoaded; // Add eating image to the load check
+		shadowImage.onload = checkImagesLoaded;
+		broccoliImage.onload = checkImagesLoaded; // Add broccoli image to the load check
+
+		// Listen for keyboard events
+		window.addEventListener('keydown', changeDirection);
+		window.addEventListener('keyup', stopMoving);
+
+		// Listen for touch events
+		llamaCanvas.addEventListener('touchstart', handleTouch);
+		llamaCanvas.addEventListener('touchmove', handleTouch);
+		llamaCanvas.addEventListener('touchend', stopTouch);
+
+		// Adjust canvas size if the window is resized
+		window.addEventListener('resize', () => {
+			resizeCanvas();
+			// Adjust llama position if needed to stay on screen
+			llamaX = Math.max(0, Math.min(llamaCanvas.width - spriteWidth, llamaX));
+			llamaY = Math.max(0, Math.min(llamaCanvas.height - spriteHeight, llamaY));
+		});
+	</script>
+</body>
+
+</html>
